@@ -32,6 +32,7 @@ import (
 	httpLib "github.com/goharbor/harbor/src/lib/http"
 	"github.com/goharbor/harbor/src/lib/log"
 	"github.com/goharbor/harbor/src/lib/orm"
+	"github.com/goharbor/harbor/src/pkg/distribution"
 	proModels "github.com/goharbor/harbor/src/pkg/project/models"
 	"github.com/goharbor/harbor/src/pkg/reg/model"
 	"github.com/goharbor/harbor/src/server/middleware"
@@ -184,9 +185,11 @@ func handleManifest(w http.ResponseWriter, r *http.Request, next http.Handler) e
 			w.Header().Set(etag, man.Digest)
 			if r.Method == http.MethodGet {
 				_, err = w.Write(man.Content)
-				if err != nil {
-					return err
-				}
+			} else {
+				err = proxyManifestHeadforLibraries(proxyCtl, art, man)
+			}
+			if err != nil {
+				return err
 			}
 			return nil
 		}
@@ -313,5 +316,29 @@ func proxyManifestHead(ctx context.Context, w http.ResponseWriter, ctl proxy.Con
 	w.Header().Set(contentLength, fmt.Sprintf("%v", desc.Size))
 	w.Header().Set(dockerContentDigest, string(desc.Digest))
 	w.Header().Set(etag, string(desc.Digest))
+	return nil
+}
+
+func proxyManifestHeadforLibraries(ctl proxy.Controller, art lib.ArtifactInfo, manList *proxy.ManifestList) error {
+	man, _, err := distribution.UnmarshalManifest(manList.ContentType, manList.Content)
+	if err != nil {
+		return err
+	}
+
+	go func(art lib.ArtifactInfo, man distribution.Manifest) {
+		bCtx := orm.Context()
+		for i := 0; i < ensureTagMaxRetry; i++ {
+			time.Sleep(ensureTagInterval)
+			for _, desc := range man.References() {
+				bArt := lib.ArtifactInfo{ProjectName: art.ProjectName, Repository: art.Repository, Digest: string(desc.Digest)}
+				err := ctl.EnsureTag(bCtx, bArt, art.Tag)
+				if err == nil {
+					return
+				}
+				log.Debugf("Failed to ensure tag %+v , error %v", art, err)
+			}
+		}
+	}(art, man)
+
 	return nil
 }

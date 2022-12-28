@@ -40,7 +40,10 @@ func NewCacheHandlerRegistry(local localInterface) map[string]ManifestCacheHandl
 		local: local,
 		cache: libCache.Default(),
 	}
-	manHandler := &ManifestCache{local}
+	manHandler := &ManifestCache{
+		local: local,
+		cache: libCache.Default(),
+	}
 	registry := map[string]ManifestCacheHandler{
 		manifestlist.MediaTypeManifestList: manListHandler,
 		v1.MediaTypeImageIndex:             manListHandler,
@@ -168,6 +171,21 @@ func (m *ManifestListCache) push(ctx context.Context, repo, reference string, ma
 // ManifestCache default Manifest handler
 type ManifestCache struct {
 	local localInterface
+	cache libCache.Cache
+}
+
+func (m *ManifestCache) cacheTrimmedDigest(ctx context.Context, newDig string) {
+	if m.cache == nil {
+		return
+	}
+	art := lib.GetArtifactInfo(ctx)
+	key := TrimmedManifestlist + string(art.Digest)
+	err := m.cache.Save(ctx, key, newDig)
+	if err != nil {
+		log.Warningf("failed to cache the trimmed manifest, err %v", err)
+		return
+	}
+	log.Debugf("Saved key:%v, value:%v", key, newDig)
 }
 
 // CacheContent ...
@@ -195,7 +213,17 @@ func (m *ManifestCache) CacheContent(ctx context.Context, remoteRepo string, man
 			}
 		}
 	}
-	err := m.local.PushManifest(art.Repository, getReference(art), man)
+
+	_, pl, err := man.Payload()
+	if err != nil {
+		log.Errorf("failed to get payload, error %v", err)
+		return
+	}
+	log.Debugf("The manifest list payload: %v", string(pl))
+	newDig := digest.FromBytes(pl)
+	m.cacheTrimmedDigest(ctx, string(newDig))
+
+	err = m.local.PushManifest(art.Repository, getReference(art), man)
 	if err != nil {
 		log.Errorf("failed to push manifest, tag: %v, error %v", art.Tag, err)
 	}
